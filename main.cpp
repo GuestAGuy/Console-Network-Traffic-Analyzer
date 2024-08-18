@@ -151,22 +151,44 @@ void packetHandler(u_char *userData, const struct pcap_pkthdr* pkthdr, const u_c
     std::cout << std::endl;
 }
 
+// Function to apply a filter to the pcap handle
+bool apply_filter(pcap_t *handle, const char *filter_exp) {
+    struct bpf_program fp;
+    bpf_u_int32 net;
 
-int main(int argc, char *argv[]) {
-    char *device = nullptr;
-    int num_packets = 10;  // Default to capturing 10 packets if not specified
-    char *filter_exp = nullptr;
-    char *filename = nullptr;
-    int capture_duration = 0;
-    int opt;
-
-    // If no arguments are provided, list all devices
-    if (argc == 1) {
-        list_devices();
-        return 0;
+    if (pcap_compile(handle, &fp, filter_exp, 0, net) == -1) {
+        std::cerr << "Error parsing filter: " << filter_exp << std::endl;
+        return false;
     }
+    if (pcap_setfilter(handle, &fp) == -1) {
+        std::cerr << "Error setting filter: " << filter_exp << std::endl;
+        return false;
+    }
+    return true;
+}
 
-    // Parse command-line arguments
+// Function to handle packet capturing
+void capture_packets(pcap_t *handle, int num_packets, const char *filename) {
+    if (filename) {
+        pcap_dumper_t *dumper = pcap_dump_open(handle, filename);
+        if (dumper == nullptr) {
+            std::cerr << "Error opening file for writing: " << filename << std::endl;
+            return;
+        }
+        std::cout << "Writing packets to " << filename << "...\n";
+        pcap_loop(handle, num_packets, [](u_char *dumper, const struct pcap_pkthdr *pkthdr, const u_char *packet) {
+            pcap_dump(dumper, pkthdr, packet);
+        }, reinterpret_cast<u_char*>(dumper));
+        pcap_dump_close(dumper);
+    } else {
+        std::cout << "Listening on device...\n";
+        pcap_loop(handle, num_packets, packetHandler, reinterpret_cast<u_char*>(handle));
+    }
+}
+
+// Function to parse command-line arguments
+bool parse_arguments(int argc, char *argv[], char*& device, int& num_packets, char*& filter_exp, char*& filename, int& capture_duration) {
+    int opt;
     while ((opt = getopt(argc, argv, "d:n:f:w:t:h")) != -1) {
         switch (opt) {
             case 'd':
@@ -186,11 +208,32 @@ int main(int argc, char *argv[]) {
                 break;
             case 'h':
                 print_usage();
-                return 0;
+                return false;
             default:
                 print_usage();
-                return 1;
+                return false;
         }
+    }
+
+    return true;
+}
+
+int main(int argc, char *argv[]) {
+    char *device = nullptr;
+    int num_packets = 10;  // Default to capturing 10 packets if not specified
+    char *filter_exp = nullptr;
+    char *filename = nullptr;
+    int capture_duration = 0;
+
+    // If no arguments are provided, list all devices
+    if (argc == 1) {
+        list_devices();
+        return 0;
+    }
+
+    // Parse command-line arguments
+    if (!parse_arguments(argc, argv, device, num_packets, filter_exp, filename, capture_duration)) {
+        return 1;
     }
 
     // If no device is specified, print an error and exit
@@ -202,8 +245,6 @@ int main(int argc, char *argv[]) {
 
     char errbuf[PCAP_ERRBUF_SIZE];
     pcap_t *handle;
-    struct bpf_program fp;
-    bpf_u_int32 net;
 
     // Open the specified device for packet capture
     handle = pcap_open_live(device, BUFSIZ, 1, 1000, errbuf);
@@ -213,44 +254,20 @@ int main(int argc, char *argv[]) {
     }
 
     // Apply the filter if specified
-    if (filter_exp) {
-        if (pcap_compile(handle, &fp, filter_exp, 0, net) == -1) {
-            std::cerr << "Error parsing filter: " << filter_exp << std::endl;
-            pcap_close(handle);
-            return 2;
-        }
-        if (pcap_setfilter(handle, &fp) == -1) {
-            std::cerr << "Error setting filter: " << filter_exp << std::endl;
-            pcap_close(handle);
-            return 2;
-        }
+    if (filter_exp && !apply_filter(handle, filter_exp)) {
+        pcap_close(handle);
+        return 2;
     }
 
     // Start the timer in a separate thread if duration is specified
     if (capture_duration > 0) {
         std::thread timer_thread(capture_timer, capture_duration, handle);
-        timer_thread.detach(); // Detach the thread to let it run independently
-        num_packets = -1;
+        timer_thread.detach();
+        num_packets = -1; // Capture indefinitely until the timer stops it
     }
 
-    // Write to file if specified
-    if (filename) {
-        pcap_dumper_t *dumper = pcap_dump_open(handle, filename);
-        if (dumper == nullptr) {
-            std::cerr << "Error opening file for writing: " << filename << std::endl;
-            pcap_close(handle);
-            return 2;
-        }
-        std::cout << "Writing packets to " << filename << "...\n";
-        pcap_loop(handle, num_packets, [](u_char *dumper, const struct pcap_pkthdr *pkthdr, const u_char *packet) {
-            pcap_dump(dumper, pkthdr, packet);
-        }, reinterpret_cast<u_char*>(dumper));
-        pcap_dump_close(dumper);
-    } else {
-        // Default packet capture loop
-        std::cout << "Listening on " << device << "...\n";
-        pcap_loop(handle, num_packets, packetHandler, reinterpret_cast<u_char*>(handle));
-    }
+    // Start packet capturing
+    capture_packets(handle, num_packets, filename);
 
     std::lock_guard<std::mutex> lock(pcap_mutex);
     pcap_close(handle);
