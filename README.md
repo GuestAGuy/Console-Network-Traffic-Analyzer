@@ -5,7 +5,7 @@
 
 ## Overview
 
-This project is a **Work in Progress** network traffic analyzer written in C++. The tool is designed to capture and analyze network traffic on specified network interfaces, with options for filtering, logging, and duration-based capture.
+This project is a **Work in Progress** console based network traffic analyzer written in C++. The tool is designed to capture and analyze network traffic on specified network interfaces, with options for filtering, logging, and duration-based capture.
 
 ## Features
 
