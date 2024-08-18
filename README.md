@@ -47,8 +47,12 @@ The tool supports several command-line options to control its behavior.
 ```bash
 ./analyzer [-d device] [-n number] [-f filter] [-w filename] [-t seconds] [-h]
 ```
--d [device]: Specify the network device to capture packets on.
--n [number]: Specify the number of packets to capture. Set to -1 for indefinite capture.
--f [filter]: Apply a BPF filter (e.g., "tcp port 80").
--w [filename]: Write captured packets to a PCAP file.
--t [seconds]: Capture packets for a specified duration, will nullify the -n argument(for now).
+- -d [device]: Specify the network device to capture packets on.
+
+- -n [number]: Specify the number of packets to capture. Set to -1 for indefinite capture.
+
+- -f [filter]: Apply a BPF filter (e.g., "tcp port 80").
+
+- -w [filename]: Write captured packets to a PCAP file.
+
+- -t [seconds]: Capture packets for a specified duration, will nullify the -n argument(for now).
