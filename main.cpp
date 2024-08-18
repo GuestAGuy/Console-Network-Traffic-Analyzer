@@ -10,15 +10,21 @@
 #include <unistd.h>
 #include <cstring>
 #include <cstdlib>
+#include <atomic>
+#include <thread>
+#include <mutex>
 
+std::atomic<bool> keep_running(true); // Atomic flag for thread safety
+std::mutex pcap_mutex; // Mutex to protect access to the pcap handle
 
 // Function to print usage information
 void print_usage() {
     std::cout << "Usage: ./analyzer [-d device] [-n number] [-f filter] [-w filename] [-t seconds] [-h]\n";
-    std::cout << "  -d [device]  : Specify the network device to capture packets on. List devices if no name is given.\n";
+    std::cout << "  -d [device]  : Specify the network device to capture packets on.\n";
     std::cout << "  -n [number]  : Specify the number of packets to capture.\n";
     std::cout << "  -f [filter]  : Apply a BPF filter to capture specific traffic (e.g., 'tcp port 80').\n";
     std::cout << "  -w [filename]: Write captured packets to a file (PCAP format).\n";
+    std::cout << "  -t [seconds] : Capture packets for a specified duration (in seconds), will nullify -n number, for now.\n";
     std::cout << "  -h           : Display this help message.\n";
 }
 
@@ -44,9 +50,25 @@ void list_devices() {
     pcap_freealldevs(alldevs);
 }
 
+// Timer function to stop capturing after a duration
+void capture_timer(int seconds, pcap_t *handle) {
+    sleep(seconds);
+    keep_running = false;
+    
+    // Ensure thread-safe access to the pcap handle
+    std::lock_guard<std::mutex> lock(pcap_mutex);
+    if (handle) {
+        pcap_breakloop(handle);
+    }
+}
 
 // Callback function called by pcap for every captured packet
 void packetHandler(u_char *userData, const struct pcap_pkthdr* pkthdr, const u_char* packet) {
+    if(!keep_running) {
+        pcap_breakloop(reinterpret_cast<pcap_t*>(userData));
+        return;
+    }
+
     // Parse Ethernet header
     struct ether_header *ethHeader;
     ethHeader = (struct ether_header*)packet;
@@ -135,6 +157,7 @@ int main(int argc, char *argv[]) {
     int num_packets = 10;  // Default to capturing 10 packets if not specified
     char *filter_exp = nullptr;
     char *filename = nullptr;
+    int capture_duration = 0;
     int opt;
 
     // If no arguments are provided, list all devices
@@ -157,6 +180,9 @@ int main(int argc, char *argv[]) {
                 break;
             case 'w':
                 filename = optarg;
+                break;
+            case 't':
+                capture_duration = std::stoi(optarg);
                 break;
             case 'h':
                 print_usage();
@@ -190,12 +216,21 @@ int main(int argc, char *argv[]) {
     if (filter_exp) {
         if (pcap_compile(handle, &fp, filter_exp, 0, net) == -1) {
             std::cerr << "Error parsing filter: " << filter_exp << std::endl;
+            pcap_close(handle);
             return 2;
         }
         if (pcap_setfilter(handle, &fp) == -1) {
             std::cerr << "Error setting filter: " << filter_exp << std::endl;
+            pcap_close(handle);
             return 2;
         }
+    }
+
+    // Start the timer in a separate thread if duration is specified
+    if (capture_duration > 0) {
+        std::thread timer_thread(capture_timer, capture_duration, handle);
+        timer_thread.detach(); // Detach the thread to let it run independently
+        num_packets = -1;
     }
 
     // Write to file if specified
@@ -203,6 +238,7 @@ int main(int argc, char *argv[]) {
         pcap_dumper_t *dumper = pcap_dump_open(handle, filename);
         if (dumper == nullptr) {
             std::cerr << "Error opening file for writing: " << filename << std::endl;
+            pcap_close(handle);
             return 2;
         }
         std::cout << "Writing packets to " << filename << "...\n";
@@ -213,9 +249,10 @@ int main(int argc, char *argv[]) {
     } else {
         // Default packet capture loop
         std::cout << "Listening on " << device << "...\n";
-        pcap_loop(handle, num_packets, packetHandler, nullptr);
+        pcap_loop(handle, num_packets, packetHandler, reinterpret_cast<u_char*>(handle));
     }
 
+    std::lock_guard<std::mutex> lock(pcap_mutex);
     pcap_close(handle);
     return 0;
 }
