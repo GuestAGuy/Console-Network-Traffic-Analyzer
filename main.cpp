@@ -7,6 +7,43 @@
 #include <netinet/udp.h>
 #include <netinet/ether.h>
 #include <arpa/inet.h>
+#include <unistd.h>
+#include <cstring>
+#include <cstdlib>
+
+
+// Function to print usage information
+void print_usage() {
+    std::cout << "Usage: ./analyzer [-d device] [-n number] [-f filter] [-w filename] [-t seconds] [-h]\n";
+    std::cout << "  -d [device]  : Specify the network device to capture packets on. List devices if no name is given.\n";
+    std::cout << "  -n [number]  : Specify the number of packets to capture.\n";
+    std::cout << "  -f [filter]  : Apply a BPF filter to capture specific traffic (e.g., 'tcp port 80').\n";
+    std::cout << "  -w [filename]: Write captured packets to a file (PCAP format).\n";
+    std::cout << "  -h           : Display this help message.\n";
+}
+
+// Function to list all available network devices
+void list_devices() {
+    char errbuf[PCAP_ERRBUF_SIZE];
+    pcap_if_t *alldevs, *device;
+
+    if (pcap_findalldevs(&alldevs, errbuf) == -1) {
+        std::cerr << "Error finding devices: " << errbuf << std::endl;
+        return;
+    }
+
+    std::cout << "Available devices:\n";
+    for (device = alldevs; device; device = device->next) {
+        std::cout << "  " << device->name;
+        if (device->description) {
+            std::cout << " (" << device->description << ")";
+        }
+        std::cout << std::endl;
+    }
+
+    pcap_freealldevs(alldevs);
+}
+
 
 // Callback function called by pcap for every captured packet
 void packetHandler(u_char *userData, const struct pcap_pkthdr* pkthdr, const u_char* packet) {
@@ -92,33 +129,93 @@ void packetHandler(u_char *userData, const struct pcap_pkthdr* pkthdr, const u_c
     std::cout << std::endl;
 }
 
-int main() {
-    pcap_if_t *alldevs, *device;
-    pcap_t *handle;
-    char errbuf[PCAP_ERRBUF_SIZE];
 
-    // Get all network interfaces
-    if (pcap_findalldevs(&alldevs, errbuf) == -1) {
-        std::cerr << "Error finding devices: " << errbuf << std::endl;
+int main(int argc, char *argv[]) {
+    char *device = nullptr;
+    int num_packets = 10;  // Default to capturing 10 packets if not specified
+    char *filter_exp = nullptr;
+    char *filename = nullptr;
+    int opt;
+
+    // If no arguments are provided, list all devices
+    if (argc == 1) {
+        list_devices();
+        return 0;
+    }
+
+    // Parse command-line arguments
+    while ((opt = getopt(argc, argv, "d:n:f:w:t:h")) != -1) {
+        switch (opt) {
+            case 'd':
+                device = optarg;
+                break;
+            case 'n':
+                num_packets = std::stoi(optarg);
+                break;
+            case 'f':
+                filter_exp = optarg;
+                break;
+            case 'w':
+                filename = optarg;
+                break;
+            case 'h':
+                print_usage();
+                return 0;
+            default:
+                print_usage();
+                return 1;
+        }
+    }
+
+    // If no device is specified, print an error and exit
+    if (device == nullptr) {
+        std::cerr << "Error: Device must be specified using the -d option.\n";
+        print_usage();
         return 1;
     }
 
-    // Use the first available device
-    device = alldevs;
-    handle = pcap_open_live(device->name, BUFSIZ, 1, 1000, errbuf);
+    char errbuf[PCAP_ERRBUF_SIZE];
+    pcap_t *handle;
+    struct bpf_program fp;
+    bpf_u_int32 net;
 
+    // Open the specified device for packet capture
+    handle = pcap_open_live(device, BUFSIZ, 1, 1000, errbuf);
     if (handle == nullptr) {
-        std::cerr << "Could not open device: " << errbuf << std::endl;
-        pcap_freealldevs(alldevs);
+        std::cerr << "Could not open device " << device << ": " << errbuf << std::endl;
         return 2;
     }
 
-    std::cout << "Listening on " << device->name << "..." << std::endl;
+    // Apply the filter if specified
+    if (filter_exp) {
+        if (pcap_compile(handle, &fp, filter_exp, 0, net) == -1) {
+            std::cerr << "Error parsing filter: " << filter_exp << std::endl;
+            return 2;
+        }
+        if (pcap_setfilter(handle, &fp) == -1) {
+            std::cerr << "Error setting filter: " << filter_exp << std::endl;
+            return 2;
+        }
+    }
 
-    // Start packet capture
-    pcap_loop(handle, 10, packetHandler, nullptr);
+    // Write to file if specified
+    if (filename) {
+        pcap_dumper_t *dumper = pcap_dump_open(handle, filename);
+        if (dumper == nullptr) {
+            std::cerr << "Error opening file for writing: " << filename << std::endl;
+            return 2;
+        }
+        std::cout << "Writing packets to " << filename << "...\n";
+        pcap_loop(handle, num_packets, [](u_char *dumper, const struct pcap_pkthdr *pkthdr, const u_char *packet) {
+            pcap_dump(dumper, pkthdr, packet);
+        }, reinterpret_cast<u_char*>(dumper));
+        pcap_dump_close(dumper);
+    } else {
+        // Default packet capture loop
+        std::cout << "Listening on " << device << "...\n";
+        pcap_loop(handle, num_packets, packetHandler, nullptr);
+    }
 
-    pcap_freealldevs(alldevs);
     pcap_close(handle);
     return 0;
 }
